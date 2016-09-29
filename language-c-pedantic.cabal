@@ -1,0 +1,21 @@
+name:                language-c-pedantic
+version:             0.0.1.0
+synopsis:            A library for pedantic C; created with code generation in mind. It has support for the C preprocessor as well.
+-- description:
+license:             MIT
+license-file:        LICENSE
+author:              Zach Sullivan
+maintainer:          zsulliva@uoregon.edu
+-- copyright:
+category:            Language
+build-type:          Simple
+extra-source-files:  ChangeLog.md
+cabal-version:       >=1.10
+
+library
+  exposed-modules:     Language.C.Pretty,
+                       Language.C.Syntax.AST
+  build-depends:       base >=4.7 && <5.0,
+                       pretty >=1.1 && <1.2
+  hs-source-dirs:      src
+  default-language:    Haskell2010
