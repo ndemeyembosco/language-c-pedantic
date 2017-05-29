@@ -323,3 +323,59 @@ sqrt  = mkUnary "sqrt"
 
 rand :: CExpr
 rand = CCall (CVar . Ident $ "rand") []
+
+
+--------------------------------------------------------------------------------
+--                                    MPI                                     --
+--------------------------------------------------------------------------------
+{-
+   Necessary bindings to the Message Passing Inferface for distributed programs
+-}
+
+-- just convered here are the ones necessary for Hakaru
+toMpiType :: [CTypeSpec] -> CExpr
+toMpiType (CInt:[])           = CVar . Ident $ "MPI_INT"
+toMpiType (CDouble:[])        = CVar . Ident $ "MPI_DOUBLE"
+toMpiType (CUnsigned:CInt:[]) = CVar . Ident $ "MPI_UNSIGNED"
+toMpiType t = error $ "toMpiType{" ++ show t ++ "} is undefined"
+
+mpiHeader :: Preprocessor
+mpiHeader = PPInclude "mpi.h"
+
+mpiInit :: CExpr -> CExpr -> CExpr
+mpiInit argc argv = mkCallE "MPI_Init" [argc,argv]
+
+mpiFinalize :: CExpr
+mpiFinalize = mkCallE "MPI_Finalize" []
+
+mpiCommWorld :: CExpr
+mpiCommWorld = CVar . Ident $ "MPI_COMM_WORLD"
+
+mpiCommSize :: CExpr -> CExpr
+mpiCommSize e =
+  mkCallE "MPI_Comm_size" [mpiCommWorld,address e]
+
+mpiCommRank :: CExpr -> CExpr
+mpiCommRank e =
+  mkCallE "MPI_Comm_rank" [mpiCommWorld,address e]
+
+mpiSend :: CExpr -> CExpr -> [CTypeSpec] -> CExpr -> CExpr -> CExpr
+mpiSend buf count typ dest tag =
+  mkCallE "MPI_Send" [buf,count,toMpiType typ,dest,tag,mpiCommWorld]
+
+mpiRecieve :: CExpr -> CExpr -> [CTypeSpec] -> CExpr -> CExpr -> CExpr
+mpiRecieve buf count typ source tag =
+  mkCallE "MPI_Recv" [buf,count,toMpiType typ,source,tag
+                     ,mpiCommWorld,CVar . Ident $ "MPI_STATUS_IGNORE"]
+
+data MpiOp = MpiSum | MpiMul
+  deriving (Show, Eq)
+
+mpiOpToCExpr :: MpiOp -> CExpr
+mpiOpToCExpr MpiSum = CVar . Ident $ "MPI_SUM"
+mpiOpToCExpr MpiMul = CVar . Ident $ "MPI_PROD"
+
+mpiReduce :: CExpr -> CExpr -> CExpr -> [CTypeSpec] -> MpiOp -> CExpr -> CExpr
+mpiReduce sendbuf recvbuf count typ op root =
+  mkCallE "MPI_Reduce" [sendbuf,recvbuf,count,toMpiType typ
+                       ,mpiOpToCExpr op,root,mpiCommWorld]
