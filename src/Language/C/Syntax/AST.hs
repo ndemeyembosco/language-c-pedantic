@@ -1,64 +1,31 @@
---------------------------------------------------------------------------------
---                                                                 2016.09.08
--- |
--- Module      :  Language.C.Syntax.AST
--- Copyright   :  Copyright (c) 2016 the Hakaru team
--- License     :  BSD3
--- Maintainer  :  zsulliva@uoregon.edu
--- Stability   :  experimental
--- Portability :  GHC-only
---
---   An AST for the C Family and preprocessor
--- Much of this is based on Manuel M T Chakravarty and Benedikt
--- Hubar's "language-c" package
---
---------------------------------------------------------------------------------
-
 module Language.C.Syntax.AST
   ( Preprocessor(..), Ident(..), CAST(..), CExtDecl(..), CFunDef(..)
 
   -- declaration constructors
   , CDecl(..), CDeclr(..), CDeclSpec(..), CStorageSpec(..), CTypeQual(..)
-  , CDirectDeclr(..), CTypeSpec(..), CSUSpec(..), CSUTag(..), CEnum(..)
-  , CInit(..), CPartDesig(..), CFunSpec(..), CPtrDeclr(..)
+  , CDirectDeclr(..), CTypeSpec(..), CTypeName(..), CSUSpec(..), CSUTag(..)
+  , CEnum(..), CInit(..), CPartDesig(..), CFunSpec(..), CPtrDeclr(..)
 
   -- statements and expression constructors
   , CStat(..), CCompoundBlockItem(..), CExpr(..), CConst(..), CUnaryOp(..)
   , CBinaryOp(..), CAssignOp(..)
 
   -- infix and smart constructors
-  , (.>.), (.<.), (.==.), (.||.), (.&&.), (.*.), (./.), (.-.), (.+.), (.=.)
-  , (.+=.),(.*=.)
-  , indirect, address, intE, floatE, stringE, mkUnary
-  , exp, expm1, log, log1p, sqrt, rand
+  , (.>.),(.<.),(.==.),(.!=.),(.||.),(.&&.),(.*.),(./.),(.-.),(.+.),(.=.),(.+=.)
+  , (.*=.),(.>=.),(.<=.),(...),(.->.)
+  , seqCStat
+  , indirect, address, index, intE, charE, floatE, stringE, mkCallE, mkUnaryE
+  , nullE
+
+  -- util
+  , cNameStream
   ) where
 
-import Prelude hiding (exp,log,sqrt)
-
-
--- very rough AST for preprocessor
-data Preprocessor
-  = PPDefine  String String
-  | PPInclude String
-  | PPUndef   String
-  | PPIf      String
-  | PPIfDef   String
-  | PPIfNDef  String
-  | PPElse    String
-  | PPElif    String
-  | PPEndif   String
-  | PPError   String
-  | PPPragma  [String]
-  deriving (Show, Eq, Ord)
-
-
-data Ident
- = Ident String
- deriving (Show, Eq, Ord)
+import Control.Monad (mplus)
 
 
 --------------------------------------------------------------------------------
--- Top Level
+--                               Top Level                                    --
 --------------------------------------------------------------------------------
 
 data CAST
@@ -77,24 +44,50 @@ data CFunDef
   = CFunDef [CDeclSpec] CDeclr [CDecl] CStat
   deriving (Show, Eq, Ord)
 
+{-
+  This is currently a very rough AST for preprocessor. Preprocessor macros
+  can be inserted at the top level and at the statement level
+-}
+data Preprocessor
+  = PPDefine  String String
+  | PPInclude String
+  | PPUndef   String
+  | PPIf      String
+  | PPIfDef   String
+  | PPIfNDef  String
+  | PPElse    String
+  | PPElif    String
+  | PPEndif   String
+  | PPError   String
+  | PPPragma  [String]
+  deriving (Show, Eq, Ord)
+
+data Ident
+ = Ident String
+ deriving (Show, Eq, Ord)
+
+
 --------------------------------------------------------------------------------
--- CDeclarations
+--                               C Declarations                               --
+--------------------------------------------------------------------------------
+{-
+  C Declarations provide tools for laying out memory objections.
+-}
 
 data CDecl
   = CDecl [CDeclSpec] [(CDeclr, Maybe CInit)]
   deriving (Show, Eq, Ord)
 
-------------
--- specifiers
+----------------
+-- Specifiers --
+----------------
 
+-- top level specifier
 data CDeclSpec
   = CStorageSpec CStorageSpec
   | CTypeSpec    CTypeSpec
   | CTypeQual    CTypeQual
   | CFunSpec     CFunSpec
-  deriving (Show, Eq, Ord)
-
-data CFunSpec = Inline
   deriving (Show, Eq, Ord)
 
 data CStorageSpec
@@ -108,6 +101,9 @@ data CStorageSpec
 data CTypeQual
   = CConstQual
   | CVolatQual
+  deriving (Show, Eq, Ord)
+
+data CFunSpec = Inline
   deriving (Show, Eq, Ord)
 
 data CTypeSpec
@@ -125,6 +121,13 @@ data CTypeSpec
   | CEnumType    CEnum
   deriving (Show, Eq, Ord)
 
+-- CTypeName is necessary for cast operations, see C99 pp81 and pp122
+-- For now, we only need to use these casts for malloc, so this is
+-- incomplete with respect to C99
+data CTypeName
+  = CTypeName [CTypeSpec] Bool
+  deriving (Show, Eq, Ord)
+
 data CSUSpec
   = CSUSpec CSUTag (Maybe Ident) [CDecl]
   deriving (Show, Eq, Ord)
@@ -138,25 +141,38 @@ data CEnum
   = CEnum (Maybe Ident) [(Ident, Maybe CExpr)]
   deriving (Show, Eq, Ord)
 
------------
--- declarators
+-----------------
+-- Declarators --
+-----------------
+{-
+  Declarators give us labels to point at and describe the level of indirection.
+  between a label and the underlieing memory
+
+  this is incomplete, see c99 reference p115
+-}
 
 data CDeclr
-  = CDeclr (Maybe CPtrDeclr) [CDirectDeclr]
+  = CDeclr (Maybe CPtrDeclr) CDirectDeclr
   deriving (Show, Eq, Ord)
 
 data CPtrDeclr = CPtrDeclr [CTypeQual]
   deriving (Show, Eq, Ord)
 
--- this is incomplete
 data CDirectDeclr
   = CDDeclrIdent Ident
-  | CDDeclrArr   CDirectDeclr CExpr
+  | CDDeclrArr   CDirectDeclr (Maybe CExpr)
   | CDDeclrFun   CDirectDeclr [CTypeSpec]
+  | CDDeclrRec   CDeclr
   deriving (Show, Eq, Ord)
 
------------
--- initializers
+------------------
+-- Initializers --
+------------------
+{-
+  Initializers allow us to fill our objects with values right as they are
+  declared rather than as a side-effect later in the program.
+-}
+
 data CInit
   = CInitExpr CExpr
   | CInitList [([CPartDesig], CInit)]
@@ -168,7 +184,14 @@ data CPartDesig
   deriving (Show, Eq, Ord)
 
 --------------------------------------------------------------------------------
--- CStatments
+--                                C Statments                                 --
+--------------------------------------------------------------------------------
+{-
+  The separation between C Statements and C Expressions is fuzzy. Here we take
+  statements as side-effecting operations sequenced by the ";" in pedantic C
+  concrete syntax. Though operators like "++" that are represented as C
+  Expressions in this AST also perform side-effects.
+-}
 
 data CStat
   = CLabel    Ident CStat
@@ -194,17 +217,21 @@ data CCompoundBlockItem
   deriving (Show, Eq, Ord)
 
 --------------------------------------------------------------------------------
--- CExpressions
+--                                C Expressions                               --
+--------------------------------------------------------------------------------
+{-
+  See C Statments...
+-}
 
 data CExpr
   = CComma       [CExpr]
   | CAssign      CAssignOp CExpr CExpr
   | CCond        CExpr CExpr CExpr
   | CBinary      CBinaryOp CExpr CExpr
-  | CCast        CDecl CExpr
+  | CCast        CTypeName CExpr
   | CUnary       CUnaryOp CExpr
   | CSizeOfExpr  CExpr
-  | CSizeOfType  CDecl
+  | CSizeOfType  CTypeName
   | CIndex       CExpr CExpr
   | CCall        CExpr [CExpr]
   | CMember      CExpr Ident Bool
@@ -274,26 +301,45 @@ data CConst
 
 
 --------------------------------------------------------------------------------
--- Infix and Smart Constructors
+--                      Infix and Smart Constructors                          --
+--------------------------------------------------------------------------------
+{-
+  These are helpful when building up ASTs in Haskell code. They correspond to
+  the concrete syntax of C. This is an incomplete set...
+-}
 
-(.<.),(.>.),(.==.),(.||.),(.&&.),(.*.),(./.),(.-.),(.+.),(.=.),(.+=.),(.*=.)
+seqCStat :: [CStat] -> CStat
+seqCStat = CCompound . fmap CBlockStat
+
+(.<.),(.>.),(.==.),(.!=.),(.||.),(.&&.),(.*.),(./.),(.-.),(.+.),(.=.),(.+=.),(.*=.),(.<=.),(.>=.)
   :: CExpr -> CExpr -> CExpr
 a .<. b  = CBinary CLeOp a b
 a .>. b  = CBinary CGrOp a b
 a .==. b = CBinary CEqOp a b
+a .!=. b = CBinary CNeqOp a b
 a .||. b = CBinary CLorOp a b
-a .&&. b = CBinary CAndOp a b
+a .&&. b = CBinary CLndOp a b
 a .*. b  = CBinary CMulOp a b
 a ./. b  = CBinary CDivOp a b
 a .-. b  = CBinary CSubOp a b
 a .+. b  = CBinary CAddOp a b
+a .<=. b = CBinary CLeqOp a b
+a .>=. b = CBinary CGeqOp a b
 a .=. b  = CAssign CAssignOp a b
-a .+=. b  = CAssign CAddAssOp a b
-a .*=. b  = CAssign CMulAssOp a b
+a .+=. b = CAssign CAddAssOp a b
+a .*=. b = CAssign CMulAssOp a b
+
 
 indirect, address :: CExpr -> CExpr
 indirect = CUnary CIndOp
 address  = CUnary CAdrOp
+
+index :: CExpr -> CExpr -> CExpr
+index = CIndex
+
+(...),(.->.) :: CExpr -> String -> CExpr
+i ... n  = CMember i (Ident n) True
+i .->. n = CMember i (Ident n) False
 
 intE :: Integer -> CExpr
 intE = CConstant . CIntConst
@@ -301,81 +347,26 @@ intE = CConstant . CIntConst
 floatE :: Float -> CExpr
 floatE = CConstant . CFloatConst
 
+charE :: Char -> CExpr
+charE = CConstant . CCharConst
+
 stringE :: String -> CExpr
 stringE = CConstant . CStringConst
 
-mkUnary :: String -> CExpr -> CExpr
-mkUnary s = CCall (CVar . Ident $ s) . (:[])
+mkCallE :: String -> [CExpr] -> CExpr
+mkCallE s = CCall (CVar . Ident $ s)
 
+mkUnaryE :: String -> CExpr -> CExpr
+mkUnaryE s a = mkCallE s [a]
 
---------------------------------------------------------------------------------
--- math.h
-
-exp,expm1,log,log1p,sqrt :: CExpr -> CExpr
-exp   = mkUnary "exp"
-expm1 = mkUnary "expm1"
-log   = mkUnary "log"
-log1p = mkUnary "log1p"
-sqrt  = mkUnary "sqrt"
+nullE :: CExpr
+nullE = CVar . Ident $ "NULL"
 
 --------------------------------------------------------------------------------
--- stdlib.h
 
-rand :: CExpr
-rand = CCall (CVar . Ident $ "rand") []
-
-
---------------------------------------------------------------------------------
---                                    MPI                                     --
---------------------------------------------------------------------------------
-{-
-   Necessary bindings to the Message Passing Inferface for distributed programs
--}
-
--- just convered here are the ones necessary for Hakaru
-toMpiType :: [CTypeSpec] -> CExpr
-toMpiType (CInt:[])           = CVar . Ident $ "MPI_INT"
-toMpiType (CDouble:[])        = CVar . Ident $ "MPI_DOUBLE"
-toMpiType (CUnsigned:CInt:[]) = CVar . Ident $ "MPI_UNSIGNED"
-toMpiType t = error $ "toMpiType{" ++ show t ++ "} is undefined"
-
-mpiHeader :: Preprocessor
-mpiHeader = PPInclude "mpi.h"
-
-mpiInit :: CExpr -> CExpr -> CExpr
-mpiInit argc argv = mkCallE "MPI_Init" [argc,argv]
-
-mpiFinalize :: CExpr
-mpiFinalize = mkCallE "MPI_Finalize" []
-
-mpiCommWorld :: CExpr
-mpiCommWorld = CVar . Ident $ "MPI_COMM_WORLD"
-
-mpiCommSize :: CExpr -> CExpr
-mpiCommSize e =
-  mkCallE "MPI_Comm_size" [mpiCommWorld,address e]
-
-mpiCommRank :: CExpr -> CExpr
-mpiCommRank e =
-  mkCallE "MPI_Comm_rank" [mpiCommWorld,address e]
-
-mpiSend :: CExpr -> CExpr -> [CTypeSpec] -> CExpr -> CExpr -> CExpr
-mpiSend buf count typ dest tag =
-  mkCallE "MPI_Send" [buf,count,toMpiType typ,dest,tag,mpiCommWorld]
-
-mpiRecieve :: CExpr -> CExpr -> [CTypeSpec] -> CExpr -> CExpr -> CExpr
-mpiRecieve buf count typ source tag =
-  mkCallE "MPI_Recv" [buf,count,toMpiType typ,source,tag
-                     ,mpiCommWorld,CVar . Ident $ "MPI_STATUS_IGNORE"]
-
-data MpiOp = MpiSum | MpiMul
-  deriving (Show, Eq)
-
-mpiOpToCExpr :: MpiOp -> CExpr
-mpiOpToCExpr MpiSum = CVar . Ident $ "MPI_SUM"
-mpiOpToCExpr MpiMul = CVar . Ident $ "MPI_PROD"
-
-mpiReduce :: CExpr -> CExpr -> CExpr -> [CTypeSpec] -> MpiOp -> CExpr -> CExpr
-mpiReduce sendbuf recvbuf count typ op root =
-  mkCallE "MPI_Reduce" [sendbuf,recvbuf,count,toMpiType typ
-                       ,mpiOpToCExpr op,root,mpiCommWorld]
+cNameStream :: [String]
+cNameStream = filter (\n -> not $ elem (head n) ['0'..'9']) names
+  where base :: [Char]
+        base = ['0'..'9'] ++ ['a'..'z']
+        names = [[x] | x <- base] `mplus` (do n <- names
+                                              [n++[x] | x <- base])
